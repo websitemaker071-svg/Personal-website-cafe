@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>The Road Cafe — Owner & Delivery</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:#f4f4f4;color:#222}
+header{background:#111;color:#fff;padding:16px 20px;display:flex;justify-content:space-between;align-items:center}
+main{max-width:1100px;margin:20px auto;padding:0 14px}.card{background:#fff;border-radius:16px;padding:18px;margin-bottom:16px;box-shadow:0 3px 14px #0001}
+input,button,select{font:inherit;padding:11px;border-radius:9px;border:1px solid #ccc;margin:4px}
+button{background:#111;color:#fff;border:0;cursor:pointer}button.red{background:#b00020}
+.hidden{display:none!important}.muted{color:#666;font-size:13px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px}
+.order,.menuitem{border:1px solid #ddd;border-radius:12px;padding:14px;margin:10px 0}.row{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+.badge{display:inline-block;padding:5px 9px;border-radius:999px;background:#eee;font-size:12px}
+</style>
+</head>
+<body>
+<header><b>THE ROAD CAFE</b><span>Owner + Delivery Panel</span></header>
+<main>
+
+<section id="login" class="card">
+<h2>Owner / Delivery Login</h2>
+<div class="card" style="background:#fafafa">
+<h3>👑 Owner</h3>
+<p class="muted">Owner ki authorized Google Gmail se login karein.</p>
+<button id="googleLogin">Continue with Google</button>
+<p class="muted">Backup: Owner Email + Password bhi available rahega.</p>
+<input id="ownerEmail" type="email" placeholder="Owner Gmail">
+<input id="ownerPass" type="password" placeholder="Owner backup password">
+<button id="ownerPasswordLogin">Owner Password Login</button>
+</div>
+
+<div class="card" style="background:#fafafa">
+<h3>🚚 Delivery Boy</h3>
+<p class="muted">Security ke liye Firebase ko email/password credential chahiye. Delivery screen par email hide karke sirf password/ID UI rakha ja sakta hai, lekin true password-only Firebase login ke liye backend/custom authentication chahiye.</p>
+<input id="deliveryPass" type="password" value="fastpacking123098" placeholder="Delivery password">
+<button id="deliveryLogin">Delivery Login</button>
+</div>
+<p id="loginMsg"></p>
+</section>
+
+<section id="app" class="hidden">
+<div class="card row"><div style="margin-right:auto"><h2 style="margin:0">Dashboard</h2><span id="role" class="badge"></span></div><button id="logout">Logout</button></div>
+
+<section id="ownerPanel" class="hidden">
+<div class="card"><h2>📦 Live Orders</h2><div id="orders">Loading…</div></div>
+<div class="card"><h2>🍕 Menu Management</h2>
+<div class="grid">
+<input id="mName" placeholder="Item name"><input id="mCategory" placeholder="Category">
+<input id="mVariant" placeholder="Variant (optional)"><input id="mPrice" type="number" placeholder="Price">
+</div><button id="addMenu">Add Item</button>
+<div id="menu"></div></div>
+</section>
+
+<section id="deliveryPanel" class="hidden">
+<div class="card"><h2>🚚 Ready Orders</h2>
+<p class="muted">Order select karke live location share karo. Browser/phone ko location permission deni hogi.</p>
+<div id="deliveryOrders">Loading…</div>
+<button id="stopGPS" class="red">Stop Live Location</button>
+<p id="gpsInfo"></p></div>
+</section>
+</section>
+</main>
+
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
+<script>
+const firebaseConfig={
+ apiKey:"AIzaSyB6QZ3JXpt06gLXeBlaJtVLDiuV-NjwX0Q",
+ authDomain:"the-road-cafe.firebaseapp.com",
+ projectId:"the-road-cafe",
+ storageBucket:"the-road-cafe.firebasestorage.app",
+ messagingSenderId:"168533497661",
+ appId:"1:168533497661:web:2aee77d76e8c21eaf59754",
+ measurementId:"G-E26MWPSZ4B"
+};
+firebase.initializeApp(firebaseConfig);
+const auth=firebase.auth(), db=firebase.firestore();
+
+const OWNER_EMAIL="sksunil.cafe@gmail.com"; // CHANGE ONLY IF THIS IS NOT THE OWNER GMAIL
+const statusText={placed:"10 min for prepare your order",preparing:"10 min for prepare your order",ready:"Ready to pickup",done:"Done your order"};
+let role=null,orderUnsub=null,menuUnsub=null,gpsWatch=null,selectedOrderId=null;
+
+const $=id=>document.getElementById(id);
+function setMsg(t){$("loginMsg").textContent=t}
+
+async function googleOwner(){
+ try{
+  await auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+  const result=await auth.signInWithPopup(new firebase.auth.GoogleAuthProvider());
+  if((result.user.email||"").toLowerCase()!==OWNER_EMAIL.toLowerCase()){
+   await auth.signOut(); throw new Error("Ye Google account Owner account nahi hai.");
+  }
+  role="owner"; showApp();
+ }catch(e){setMsg(e.message)}
+}
+$("googleLogin").onclick=googleOwner;
+
+async function ownerPasswordLogin(){
+ const email=$("ownerEmail").value.trim(), pass=$("ownerPass").value;
+ if(email.toLowerCase()!==OWNER_EMAIL.toLowerCase()) return setMsg("Sirf authorized Owner Gmail allowed hai.");
+ if(!pass) return setMsg("Owner backup password bharo.");
+ try{
+  await auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+  await auth.signInWithEmailAndPassword(email,pass);
+  role="owner"; showApp();
+ }catch(e){setMsg(e.message)}
+}
+$("ownerPasswordLogin").onclick=ownerPasswordLogin;
+
+async function deliveryLogin(){
+ const pass=$("deliveryPass").value;
+ if(!pass)return setMsg("Delivery password bharo.");
+ // Firebase uses an internal email credential; the Delivery Boy never sees or enters it.
+ const internalEmail="delivery@theroadcafe.com";
+ try{
+  await auth.setPersistence(firebase.auth.Auth.Persistence.SESSION);
+  await auth.signInWithEmailAndPassword(internalEmail,pass);
+  role="delivery"; showApp();
+ }catch(e){setMsg("Delivery login failed: "+e.message)}
+}
+$("deliveryLogin").onclick=deliveryLogin;
+
+function showApp(){
+ $("login").classList.add("hidden"); $("app").classList.remove("hidden");
+ $("role").textContent=role==="owner"?"OWNER":"DELIVERY BOY";
+ $("ownerPanel").classList.toggle("hidden",role!=="owner");
+ $("deliveryPanel").classList.toggle("hidden",role!=="delivery");
+ role==="owner"?startOwner():startDelivery();
+}
+
+$("logout").onclick=async()=>{if(gpsWatch!==null)navigator.geolocation.clearWatch(gpsWatch);await auth.signOut();location.reload()};
+
+function startOwner(){
+ orderUnsub=db.collection("orders").orderBy("createdAt","desc").onSnapshot(s=>{
+  $("orders").innerHTML=s.empty?"No orders yet.":s.docs.map(d=>{
+   const o=d.data(), items=(o.items||[]).map(x=>`${x.name}${x.variant?" ("+x.variant+")":""} × ${x.qty}`).join(", ");
+   return `<div class="order"><b>Order ${d.id.slice(0,7)}</b>
+   <p>${items}</p><p>Customer: ${o.name||""}<br>Phone: ${o.phone||""}<br>Address: ${o.address||""}<br>Total: ₹${o.total||0}</p>
+   <b>${statusText[o.status]||o.status||"placed"}</b>
+   <div class="row">${o.status==="placed"?`<button onclick="prepareOrder('${d.id}')">Start / 10 min</button>`:""}
+   ${o.status==="preparing"?`<button onclick="readyOrder('${d.id}')">Ready to pickup</button>`:""}
+   </div></div>`;
+  }).join("");
+ });
+ menuUnsub=db.collection("menu").orderBy("name").onSnapshot(s=>{
+  $("menu").innerHTML=s.empty?"No menu items yet.":s.docs.map(d=>{
+   const x=d.data();return `<div class="menuitem"><b>${x.name}</b> — ${x.category||""} ${x.variant?"("+x.variant+")":""} — ₹${x.price}
+   <button class="red" onclick="deleteMenu('${d.id}')">Delete</button></div>`;
+  }).join("");
+ });
+}
+window.prepareOrder=id=>db.collection("orders").doc(id).update({status:"preparing",statusText:statusText.preparing,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
+window.readyOrder=id=>db.collection("orders").doc(id).update({status:"ready",statusText:statusText.ready,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
+$("addMenu").onclick=async()=>{
+ const name=$("mName").value.trim(),category=$("mCategory").value.trim(),variant=$("mVariant").value.trim(),price=Number($("mPrice").value);
+ if(!name||!category||!price)return alert("Name, category aur price bharo.");
+ await db.collection("menu").add({name,category,variant,price,active:true,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
+ ["mName","mCategory","mVariant","mPrice"].forEach(id=>$(id).value="");
+};
+window.deleteMenu=async id=>{if(confirm("Delete item?"))await db.collection("menu").doc(id).delete()};
+
+function startDelivery(){
+ db.collection("orders").where("status","==","ready").orderBy("createdAt","desc").onSnapshot(s=>{
+  $("deliveryOrders").innerHTML=s.empty?"No ready orders.":s.docs.map(d=>{
+   const o=d.data();
+   return `<div class="order"><b>Order ${d.id.slice(0,7)}</b><p>Customer: ${o.name||""}<br>Phone: ${o.phone||""}<br>Address: ${o.address||""}<br>Total: ₹${o.total||0}</p>
+   <button onclick="startOrderGPS('${d.id}')">Start Location</button>
+   <button onclick="finishOrder('${d.id}')">Done your order</button></div>`;
+  }).join("");
+ });
+}
+window.startOrderGPS=id=>{
+ selectedOrderId=id;
+ if(!navigator.geolocation)return alert("GPS supported nahi hai.");
+ if(gpsWatch!==null)navigator.geolocation.clearWatch(gpsWatch);
+ gpsWatch=navigator.geolocation.watchPosition(async p=>{
+  if(!selectedOrderId)return;
+  const loc={lat:p.coords.latitude,lng:p.coords.longitude,updatedAt:firebase.firestore.Timestamp.now()};
+  await db.collection("orders").doc(selectedOrderId).update({deliveryLocation:loc,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
+  $("gpsInfo").textContent=`Live location active: ${loc.lat.toFixed(5)}, ${loc.lng.toFixed(5)}`;
+ },e=>alert("Location permission allow karo: "+e.message),{enableHighAccuracy:true,maximumAge:5000,timeout:15000});
+};
+window.finishOrder=async id=>{selectedOrderId=null;await db.collection("orders").doc(id).update({status:"done",statusText:"Done your order",updatedAt:firebase.firestore.FieldValue.serverTimestamp()})};
+$("stopGPS").onclick=()=>{if(gpsWatch!==null)navigator.geolocation.clearWatch(gpsWatch);gpsWatch=null;selectedOrderId=null;$("gpsInfo").textContent="Live location stopped."};
+</script>
+</body>
+</html>
